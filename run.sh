@@ -24,7 +24,15 @@ DARK="${QML4J_DARK:-true}"
 # `QML4J_FPS=true ./run.sh app` shows a top-right FPS overlay; QML4J_VSYNC=false uncaps
 # the frame loop (otherwise vsync pins it to the monitor refresh, ~60fps);
 # QML4J_CANVAS_CACHE=false falls back to per-frame direct canvas draw (cache on by default).
-exec java -cp "$CP" -Dqml4j.mcq="${MCQ_DIR:-$PWD/../mcq}" -Dqml4j.dark="$DARK" \
+#
+# macOS/Cocoa must drive the GLFW/AppKit event loop on the process's first thread, so the
+# JVM that runs DesktopMain has to start with -XstartOnFirstThread. It is a VM launch flag on
+# this direct `java` call -- `mvn exec:java` can't add it (Maven's JVM already started off the
+# first thread). Linux/Windows keep the exact previous launch; the `[@]+` guard expands to
+# nothing there, so that path stays byte-identical under `set -u`.
+JVM_OPTS=()
+[ "$(uname -s)" = "Darwin" ] && JVM_OPTS+=(-XstartOnFirstThread)
+exec java ${JVM_OPTS[@]+"${JVM_OPTS[@]}"} -cp "$CP" -Dqml4j.mcq="${MCQ_DIR:-$PWD/../mcq}" -Dqml4j.dark="$DARK" \
     -Dqml4j.fps="${QML4J_FPS:-false}" -Dqml4j.vsync="${QML4J_VSYNC:-true}" \
     -Dqml4j.canvasCache="${QML4J_CANVAS_CACHE:-true}" \
     io.github.timer_err.qml4j.demo.DesktopMain "$@"

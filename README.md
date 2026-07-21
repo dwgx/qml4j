@@ -190,6 +190,13 @@ These map to the `-Dqml4j.fps` / `-Dqml4j.vsync` / `-Dqml4j.canvasCache` / `-Dqm
 
 `run.sh` recompiles `qml4j-core` + the desktop module from source (`-am`) and launches `java` directly with the freshly-built `target/classes` ahead of any `~/.m2` jar on the classpath — no `mvn install` after editing the engine, and a stale `~/.m2/qml4j-core` can't shadow your changes. (Plain `mvn -pl qml4j-demo-desktop exec:java` resolves `qml4j-core` from `~/.m2` and silently runs a stale engine, e.g. "unknown QML type" for a freshly-registered item.)
 
+On macOS the desktop host must additionally be launched with `-XstartOnFirstThread` so GLFW
+can run on the process's first thread; `run.sh` adds it automatically when it detects macOS.
+Use `run.sh` (or an equivalent direct `java -XstartOnFirstThread … DesktopMain` launch) there.
+`mvn exec:java` cannot enable it: the flag only takes effect at JVM start-up, and Maven's JVM
+has already started off the first thread, so it can't be applied afterward. (macOS desktop
+support is still in progress — this covers only the first-thread launch.)
+
 Exit code 137 on close is expected (NVIDIA libEGL teardown SIGSEGV, worked around by SIGKILL-self).
 
 ### Package a distributable jar
