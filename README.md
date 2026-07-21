@@ -197,7 +197,7 @@ Use `run.sh` (or an equivalent direct `java -XstartOnFirstThread … DesktopMain
 has already started off the first thread, so it can't be applied afterward. (macOS desktop
 support is still in progress — this covers only the first-thread launch.)
 
-Exit code 137 on close is expected (NVIDIA libEGL teardown SIGSEGV, worked around by SIGKILL-self).
+On Linux, closing the window exits with code 137: the host SIGKILLs itself to dodge an NVIDIA libEGL teardown SIGSEGV. macOS and Windows release resources and exit 0 normally.
 
 ### Package a distributable jar
 
