@@ -238,9 +238,11 @@ public final class DesktopMain {
     // Ordered teardown: scene and GPU resources first (while the GL context is still
     // current), then unbind, free callbacks, destroy the window, and terminate GLFW. Each
     // step is attempted independently so one failure cannot strand a later native release --
-    // the first error becomes primary and the rest are attached as suppressed. Guards make it
-    // safe after a partial init and idempotent; the window handle clears only once destroy
-    // succeeds. Does not exit the process; run() owns the platform exit.
+    // the first error becomes primary and the rest are attached as suppressed. Guards keep it
+    // safe after a partial init, and each handle is cleared once its own step succeeds (host,
+    // backend, and the window only after destroy), so completed work is not redone; a step
+    // that throws keeps its guard, so this is not unconditionally idempotent after a failed
+    // cleanup. Does not exit the process; run() owns the platform exit.
     private void shutdown() {
         Throwable error = null;
         error = step(error, () -> { if (host != null) { host.dispose(); host = null; } });

@@ -88,7 +88,7 @@ scrollable containers.
 tap-to-caret + arrow/Home/End motion + blinking cursor, selection
 range with shift+arrow / drag / replace-on-insert, clipboard
 cut/copy/paste through a `Clipboard` SPI (`AndroidClipboard` +
-`AwtClipboard`).
+`GlfwClipboard`).
 
 Desktop demo (LWJGL+GL) and Android APK (D8 → DEX →
 `InMemoryDexClassLoader`) both load arbitrary `.qml` at runtime.
