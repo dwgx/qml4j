@@ -12,6 +12,8 @@ import org.lwjgl.glfw.GLFWFramebufferSizeCallback;
 import org.lwjgl.glfw.GLFWKeyCallback;
 import org.lwjgl.glfw.GLFWMouseButtonCallback;
 import org.lwjgl.glfw.GLFWScrollCallback;
+import org.lwjgl.glfw.GLFWWindowContentScaleCallback;
+import org.lwjgl.glfw.GLFWWindowSizeCallback;
 import org.lwjgl.system.MemoryUtil;
 
 import java.io.IOException;
@@ -31,12 +33,17 @@ public final class DesktopMain {
     private GlfwSurfaceBackend backend;
     private DesktopHost host;
 
-    // glfwGetCursorPos reports window (screen) coordinates; the QML root is sized in
-    // framebuffer pixels. On HiDPI those differ, so scale every pointer coordinate.
-    private float scaleX = 1f;
-    private float scaleY = 1f;
-    private double cursorX;
-    private double cursorY;
+    // The one source of truth for the logical coordinate space, refreshed once per iteration
+    // before the frame it will be drawn with. The metrics callbacks only raise the flag.
+    private DesktopMetrics metrics;
+    private boolean metricsDirty;
+    private boolean nonUniformScaleWarned;
+
+    // glfwGetCursorPos reports window screen coordinates; they are stored raw and converted at
+    // dispatch time, so a pointer event is hit-tested against the snapshot that produced the
+    // frame the user was actually looking at.
+    private double rawCursorX;
+    private double rawCursorY;
     // Latest cursor position, dispatched once per frame. GLFW delivers many cursor-move
     // events per poll; firing pointerMove on each runs the full hit-test + handler chain
     // (e.g. a ColorPicker slider's onMoved regenerates the whole MD3 scheme, ~6 ms) several
@@ -73,39 +80,41 @@ public final class DesktopMain {
         try {
             createWindow();
 
-            int[] fw = new int[1];
-            int[] fh = new int[1];
-            GLFW.glfwGetFramebufferSize(window, fw, fh);
+            metrics = queryMetrics();
+            warnOnceOnNonUniformScale(metrics);
 
-            backend = new GlfwSurfaceBackend(window, fw[0], fh[0]);
-            backend.init(fw[0], fh[0]);
-            updateScale(fw[0], fh[0]);
+            backend = new GlfwSurfaceBackend(window, metrics.fbWidth(), metrics.fbHeight());
+            backend.init(metrics.fbWidth(), metrics.fbHeight());
+            backend.setUiScale(metrics.uiScale());
 
             boolean dark = !"false".equals(System.getProperty("qml4j.dark", "true"));
             ((StyleManager) StyleManager.__instance()).isDarkTheme.set(dark);
 
+            float rootW = metrics.rootWidth();
+            float rootH = metrics.rootHeight();
             Clipboard clipboard = new GlfwClipboard(window);
             if (app) {
-                host = new DesktopHost(new AppResourceLoader(), fw[0], fh[0], clipboard);
+                host = new DesktopHost(new AppResourceLoader(), rootW, rootH, clipboard);
                 host.startApp();
             } else if (mock) {
-                host = new DesktopHost(new DirResourceLoader(Paths.get(args[1])), fw[0], fh[0], clipboard);
+                host = new DesktopHost(new DirResourceLoader(Paths.get(args[1])), rootW, rootH, clipboard);
                 Map<String, Object> ctx = new LinkedHashMap<>();
                 ctx.put("client", new MockClient());
                 host.run(args[2], ctx);
             } else {
-                host = new DesktopHost(new DirResourceLoader(Paths.get(args[0])), fw[0], fh[0], clipboard);
+                host = new DesktopHost(new DirResourceLoader(Paths.get(args[0])), rootW, rootH, clipboard);
                 host.run(args[1]);
             }
 
             installCallbacks();
 
             while (!GLFW.glfwWindowShouldClose(window)) {
+                if (metricsDirty) applyMetrics();
                 host.renderFrame(backend);
                 GLFW.glfwPollEvents();
                 if (cursorMoved) {
                     cursorMoved = false;
-                    host.pointerMove((float) cursorX, (float) cursorY);
+                    host.pointerMove(logicalCursorX(), logicalCursorY());
                 }
             }
         } catch (RuntimeException | Error e) {
@@ -142,6 +151,10 @@ public final class DesktopMain {
     }
 
     private void createWindow() {
+        // Where screen coordinates and pixels map 1:1 (Windows, X11) the requested size would
+        // otherwise be a pixel count, so the window would come up two thirds of its intended
+        // logical size at 150%. A no-op where they can already differ (macOS, Wayland).
+        GLFW.glfwWindowHint(GLFW.GLFW_SCALE_TO_MONITOR, GLFW.GLFW_TRUE);
         GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MAJOR, 3);
         GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MINOR, 2);
         GLFW.glfwWindowHint(GLFW.GLFW_OPENGL_PROFILE, GLFW.GLFW_OPENGL_CORE_PROFILE);
@@ -160,35 +173,87 @@ public final class DesktopMain {
         GLFW.glfwSwapInterval(vsync ? 1 : 0);
     }
 
-    private void updateScale(int fbW, int fbH) {
+    // Rebuild the whole snapshot from GLFW getters instead of mixing callback arguments.
+    // Callbacks only mark it dirty, so their delivery order cannot publish an intermediate state.
+    private DesktopMetrics queryMetrics() {
+        int[] fw = new int[1];
+        int[] fh = new int[1];
+        GLFW.glfwGetFramebufferSize(window, fw, fh);
         int[] ww = new int[1];
         int[] wh = new int[1];
         GLFW.glfwGetWindowSize(window, ww, wh);
-        scaleX = ww[0] > 0 ? (float) fbW / ww[0] : 1f;
-        scaleY = wh[0] > 0 ? (float) fbH / wh[0] : 1f;
+        float[] sx = new float[1];
+        float[] sy = new float[1];
+        GLFW.glfwGetWindowContentScale(window, sx, sy);
+        return DesktopMetrics.of(fw[0], fh[0], ww[0], wh[0], sx[0], sy[0]);
+    }
+
+    // Publish a snapshot before the frame drawn from it. If a platform temporarily reports zero
+    // dimensions (for example while minimised), the snapshot is dropped whole -- surface, scale
+    // and root all keep their last good values -- and the flag stays raised so the next iteration
+    // retries without needing the platform to send a further event. The surface is rebuilt only
+    // by a framebuffer change: backend.resize returns immediately when the size is unchanged, and
+    // the scale has its own setter, so moving to a display with a different DPI never reallocates
+    // the GPU surface.
+    private void applyMetrics() {
+        DesktopMetrics m = queryMetrics();
+        if (!m.valid()) return;
+        metricsDirty = false;
+        metrics = m;
+        warnOnceOnNonUniformScale(m);
+        backend.resize(m.fbWidth(), m.fbHeight());
+        backend.setUiScale(m.uiScale());
+        host.resize(m.rootWidth(), m.rootHeight());
+    }
+
+    // Rendering is uniform: the renderer's picture cache keys on a single device scale, so a
+    // per-axis transform would stretch the scene on a square-pixel display. Report the axis
+    // being ignored rather than silently branching on it.
+    private void warnOnceOnNonUniformScale(DesktopMetrics m) {
+        if (nonUniformScaleWarned || !m.nonUniformScale()) return;
+        nonUniformScaleWarned = true;
+        System.err.println("[qml4j] window content scale differs between axes; "
+            + "rendering with the x scale " + m.uiScale());
+    }
+
+    private float logicalCursorX() {
+        return metrics.toLogicalX(rawCursorX);
+    }
+
+    private float logicalCursorY() {
+        return metrics.toLogicalY(rawCursorY);
     }
 
     private void installCallbacks() {
         GLFW.glfwSetFramebufferSizeCallback(window, new GLFWFramebufferSizeCallback() {
             @Override public void invoke(long win, int w, int h) {
-                if (w <= 0 || h <= 0) return;
-                backend.resize(w, h);
-                host.resize(w, h);
-                updateScale(w, h);
+                metricsDirty = true;
+            }
+        });
+        // Redundant on every platform GLFW supports (a window resize always moves the
+        // framebuffer too), but it costs one flag and removes the need to prove that.
+        GLFW.glfwSetWindowSizeCallback(window, new GLFWWindowSizeCallback() {
+            @Override public void invoke(long win, int w, int h) {
+                metricsDirty = true;
+            }
+        });
+        GLFW.glfwSetWindowContentScaleCallback(window, new GLFWWindowContentScaleCallback() {
+            @Override public void invoke(long win, float sx, float sy) {
+                metricsDirty = true;
             }
         });
         GLFW.glfwSetCursorPosCallback(window, new GLFWCursorPosCallback() {
             @Override public void invoke(long win, double x, double y) {
-                cursorX = x * scaleX;
-                cursorY = y * scaleY;
+                rawCursorX = x;
+                rawCursorY = y;
                 cursorMoved = true;
             }
         });
         GLFW.glfwSetMouseButtonCallback(window, new GLFWMouseButtonCallback() {
             @Override public void invoke(long win, int button, int action, int mods) {
                 if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return;
-                if (action == GLFW.GLFW_PRESS) host.pointerDown((float) cursorX, (float) cursorY);
-                else if (action == GLFW.GLFW_RELEASE) host.pointerUp((float) cursorX, (float) cursorY);
+                if (action == GLFW.GLFW_PRESS) host.pointerDown(logicalCursorX(), logicalCursorY());
+                else if (action == GLFW.GLFW_RELEASE) host.pointerUp(logicalCursorX(), logicalCursorY());
             }
         });
         GLFW.glfwSetKeyCallback(window, new GLFWKeyCallback() {
@@ -203,7 +268,8 @@ public final class DesktopMain {
         });
         GLFW.glfwSetScrollCallback(window, new GLFWScrollCallback() {
             @Override public void invoke(long win, double xoffset, double yoffset) {
-                host.wheel((float) cursorX, (float) cursorY, (float) xoffset, (float) yoffset);
+                // The offsets are scroll deltas, not coordinates; only the anchor converts.
+                host.wheel(logicalCursorX(), logicalCursorY(), (float) xoffset, (float) yoffset);
             }
         });
     }

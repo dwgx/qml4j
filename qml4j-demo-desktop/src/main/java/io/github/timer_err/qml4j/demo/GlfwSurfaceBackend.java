@@ -17,6 +17,7 @@ public final class GlfwSurfaceBackend implements SurfaceBackend {
     private final long window;
     private int width;
     private int height;
+    private float uiScale = 1f;
     private DirectContext context;
     private BackendRenderTarget target;
     private Surface surface;
@@ -36,6 +37,13 @@ public final class GlfwSurfaceBackend implements SurfaceBackend {
         rebuildSurface();
     }
 
+    // The scene is drawn in logical units; this canvas carries the logical-to-device transform,
+    // which the renderer reads back as its device scale so raster backings and cached pictures
+    // are recorded at screen resolution. Changing it never touches the surface.
+    void setUiScale(float uiScale) {
+        this.uiScale = uiScale;
+    }
+
     @Override
     public Canvas acquireCanvas() {
         // Clear through Skija, not a raw GL11.glClear: a bare glClear is invisible
@@ -43,7 +51,11 @@ public final class GlfwSurfaceBackend implements SurfaceBackend {
         // full-surface fill), leaving the background black. canvas.clear() enters
         // Skija's own command stream so ordering is correct.
         Canvas canvas = surface.getCanvas();
+        // getCanvas() returns the same canvas every frame, so reset first or the scale
+        // compounds; clearing while the matrix is identity covers the whole surface.
+        canvas.resetMatrix();
         canvas.clear(0xFF000000);
+        if (uiScale != 1f) canvas.scale(uiScale, uiScale);
         return canvas;
     }
 

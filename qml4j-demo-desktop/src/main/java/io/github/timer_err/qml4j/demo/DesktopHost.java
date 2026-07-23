@@ -10,21 +10,22 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-// Owns the live QmlView and routes already-framebuffer-scaled input into it. A fresh
-// QmlEngine/QmlView is built per loaded document (mirroring the Android shell). All
-// coordinates are framebuffer pixels, matching root width/height.
+// Owns the live QmlView and routes input into it. A fresh QmlEngine/QmlView is built per
+// loaded document (mirroring the Android shell). All coordinates are logical units, matching
+// root width/height; the host converts from screen coordinates before dispatching, and the
+// surface backend carries the logical-to-device scale.
 final class DesktopHost {
 
     private final ResourceLoader loader;
     private final Clipboard clipboard;
     private QmlView view;
-    private int fbW;
-    private int fbH;
+    private float rootW;
+    private float rootH;
 
-    DesktopHost(ResourceLoader loader, int fbW, int fbH, Clipboard clipboard) {
+    DesktopHost(ResourceLoader loader, float rootW, float rootH, Clipboard clipboard) {
         this.loader = loader;
-        this.fbW = fbW;
-        this.fbH = fbH;
+        this.rootW = rootW;
+        this.rootH = rootH;
         this.clipboard = clipboard;
     }
 
@@ -105,17 +106,19 @@ final class DesktopHost {
             + "}\n";
     }
 
+    // A fractional extent is deliberate: rounding it would leave the far edge of the
+    // framebuffer outside the scene at a fractional content scale.
     private void sizeRoot() {
         if (view.root() == null) return;
         view.root().x.set(0);
         view.root().y.set(0);
-        view.root().width.set(fbW);
-        view.root().height.set(fbH);
+        view.root().width.set(rootW);
+        view.root().height.set(rootH);
     }
 
-    void resize(int w, int h) {
-        fbW = w;
-        fbH = h;
+    void resize(float w, float h) {
+        rootW = w;
+        rootH = h;
         if (view != null) sizeRoot();
     }
 
