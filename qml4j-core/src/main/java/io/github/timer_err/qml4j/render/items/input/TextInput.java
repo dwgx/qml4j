@@ -55,6 +55,9 @@ public class TextInput extends Item implements TextEditable {
     @Override public int selectionAnchor() { return selectionAnchor; }
     @Override public void setSelectionAnchor(int a) { selectionAnchor = a; }
     @Override public boolean readOnly() { return Boolean.TRUE.equals(readOnly.peek()); }
+    // Only Normal permits copying the model text to the clipboard; all other and
+    // unrecognised modes fail closed.
+    @Override public boolean allowsClipboardCopy() { return echoMode.peekInt() == 0; }
     @Override public int maximumLength() { return maximumLength.peekInt(); }
     @Override public void emitTextChanged() { textChanged.emit(); }
     @Override public boolean handleEnter() { accepted.emit(); return true; }

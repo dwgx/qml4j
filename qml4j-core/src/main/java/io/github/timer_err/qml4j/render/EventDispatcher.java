@@ -99,13 +99,22 @@ final class EventDispatcher {
         return applyInsert(ti, text);
     }
 
+    // The order here is the safety contract. The policy question is settled before
+    // any text is handed to the backend, and the write is read back and compared
+    // before a cut is allowed to destroy the selection: Clipboard.setText returns
+    // void (as does the GLFW call behind it), so a silently dropped write is only
+    // observable by reading the value back.
     private boolean copyFromSelection(TextEditable ti, boolean alsoDelete) {
+        if (!ti.allowsClipboardCopy()) return false;
+        if (clipboard == null) return false;
         String cur = ti.text();
         if (cur == null) cur = "";
         int s = ti.selectionStart();
         int e = ti.selectionEnd();
         if (e <= s) return false;
-        if (clipboard != null) clipboard.setText(cur.substring(s, e));
+        String selected = cur.substring(s, e);
+        clipboard.setText(selected);
+        if (!selected.equals(clipboard.getText())) return false;
         if (alsoDelete) deleteSelection(ti, cur);
         return true;
     }
