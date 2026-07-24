@@ -65,6 +65,111 @@ class ClipboardPolicyTest {
     }
 
     @Test
+    void copyAndCutFailClosedForInvalidEchoModeSetInQml() {
+        // Each value reaches echoMode raw through the real compiler: 0.5 / null / false
+        // are one-token literals assigned straight to the Property, while -0.5 and NaN
+        // are not literals (a leading '-', a bare identifier) and arrive via a binding.
+        // peekInt() folds every one of them to 0, which would wrongly permit the copy.
+        String[][] cases = {
+            {"literal 0.5", "echoMode: 0.5"},
+            {"literal null", "echoMode: null"},
+            {"literal false", "echoMode: false"},
+            {"binding -0.5", "echoMode: -0.5"},
+            {"binding NaN", "echoMode: NaN"},
+        };
+        for (String[] c : cases) {
+            QmlView v = newView();
+            RecordingClipboard cb = new RecordingClipboard();
+            v.setClipboard(cb);
+            Item root = v.load(
+                "Item { width: 200; height: 100\n"
+                    + "  TextInput { focus: true; text: \"s3cret\"; " + c[1] + " }\n"
+                    + "}");
+            TextInput ti = (TextInput) root.children.get(0);
+            assertCopyAndCutFailClosed(v, ti, cb, c[0]);
+        }
+    }
+
+    @Test
+    void copyAndCutFailClosedForInvalidEchoModeSetOnTheProperty() {
+        // The imperative property write the other tests use (Property.set) stores the
+        // value verbatim, so a fractional, NaN or null mode reaches the policy as written.
+        Number[] modes = {0.5, -0.5, Double.NaN, null};
+        for (Number mode : modes) {
+            QmlView v = newView();
+            RecordingClipboard cb = new RecordingClipboard();
+            v.setClipboard(cb);
+            Item root = v.load(
+                "Item { width: 200; height: 100\n"
+                    + "  TextInput { focus: true; text: \"s3cret\" }\n"
+                    + "}");
+            TextInput ti = (TextInput) root.children.get(0);
+            ti.echoMode.set(mode);
+            assertCopyAndCutFailClosed(v, ti, cb, "echoMode=" + mode);
+        }
+    }
+
+    @Test
+    void copyAndCutFailClosedForEchoModeAssignedFromJs() {
+        // Imperative JS assignment routes through MemberAccess.writeMember -> Property.set,
+        // the exact path a QML handler takes, landing the raw JS number on echoMode.
+        QmlView v = newView();
+        RecordingClipboard cb = new RecordingClipboard();
+        v.setClipboard(cb);
+        Item root = v.load(
+            "Item { width: 200; height: 100\n"
+                + "  TextInput { id: inp; focus: true; text: \"s3cret\"\n"
+                + "    Component.onCompleted: inp.echoMode = 0.5 }\n"
+                + "}");
+        TextInput ti = (TextInput) root.children.get(0);
+        assertEquals(0.5, ti.echoMode.peekDouble(), 0d, "the JS write must land 0.5 verbatim");
+        assertCopyAndCutFailClosed(v, ti, cb, "js echoMode = 0.5");
+    }
+
+    @Test
+    void floatingPointZeroEchoModeStillCopies() {
+        // The permitted set is exactly {0, 0.0, -0.0}: a Double zero is still Normal and
+        // must keep copying, so the guard cannot be "refuse anything that is not an int".
+        for (Number zero : new Number[] {0.0, -0.0}) {
+            QmlView v = newView();
+            RecordingClipboard cb = new RecordingClipboard();
+            v.setClipboard(cb);
+            Item root = v.load(
+                "Item { width: 200; height: 100\n"
+                    + "  TextInput { focus: true; text: \"hello world\" }\n"
+                    + "}");
+            TextInput ti = (TextInput) root.children.get(0);
+            ti.echoMode.set(zero);
+            ti.selectionStart.set(0);
+            ti.selectionEnd.set(5);
+            assertTrue(v.copy(), "echoMode " + zero + " is Normal and must copy");
+            assertEquals("hello", cb.stored, "echoMode " + zero + " must publish the selection");
+        }
+    }
+
+    private static void assertCopyAndCutFailClosed(
+        QmlView v, TextInput ti, RecordingClipboard cb, String label) {
+        ti.selectionStart.set(0);
+        ti.selectionEnd.set(6);
+        ti.selectionAnchor = 0;
+        ti.cursorPosition.set(6);
+        int[] changes = new int[1];
+        ti.textChanged.connect(() -> changes[0]++);
+
+        assertFalse(v.copy(), label + ": copy must be refused");
+        assertFalse(v.cut(), label + ": cut must be refused");
+        assertEquals(0, cb.setCalls, label + ": nothing may be handed to the clipboard");
+        assertEquals(0, cb.getCalls, label + ": the clipboard must not be read either");
+        assertNull(cb.stored, label + ": the clipboard must stay untouched");
+        assertEquals("s3cret", ti.text.peek(), label + ": the text must survive");
+        assertEquals(0, ti.selectionStart.peekInt(), label + ": selection start must survive");
+        assertEquals(6, ti.selectionEnd.peekInt(), label + ": selection end must survive");
+        assertEquals(0, ti.selectionAnchor, label + ": the selection anchor must survive");
+        assertEquals(6, ti.cursorPosition.peekInt(), label + ": the caret must survive");
+        assertEquals(0, changes[0], label + ": textChanged must not fire");
+    }
+
+    @Test
     void normalEchoModeStillCopiesAndCuts() {
         QmlView v = newView();
         RecordingClipboard cb = new RecordingClipboard();
