@@ -32,7 +32,10 @@ DARK="${QML4J_DARK:-true}"
 # nothing there, so that path stays byte-identical under `set -u`.
 JVM_OPTS=()
 [ "$(uname -s)" = "Darwin" ] && JVM_OPTS+=(-XstartOnFirstThread)
-exec java ${JVM_OPTS[@]+"${JVM_OPTS[@]}"} -cp "$CP" -Dqml4j.mcq="${MCQ_DIR:-$PWD/../mcq}" -Dqml4j.dark="$DARK" \
+# Maven above obeys JAVA_HOME, so it is JAVA_HOME that decided which platform's natives are on
+# $CP. Launch that same JDK, or an x64 JAVA_HOME with an arm64 java first on PATH hands x64
+# natives to an arm64 JVM and LWJGL dies on liblwjgl.dylib. Empty or unset keeps the bare `java`.
+exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" ${JVM_OPTS[@]+"${JVM_OPTS[@]}"} -cp "$CP" -Dqml4j.mcq="${MCQ_DIR:-$PWD/../mcq}" -Dqml4j.dark="$DARK" \
     -Dqml4j.fps="${QML4J_FPS:-false}" -Dqml4j.vsync="${QML4J_VSYNC:-true}" \
     -Dqml4j.canvasCache="${QML4J_CANVAS_CACHE:-true}" \
     io.github.timer_err.qml4j.demo.DesktopMain "$@"
