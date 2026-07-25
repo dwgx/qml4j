@@ -150,6 +150,21 @@ final class DesktopHost {
         if (view != null && s != null && !s.isEmpty()) view.dispatchKey(0, s, true);
     }
 
+    // The view is private to this host, so the key callback reaches the core clipboard actions
+    // through here. The boolean reports whether core acted; whether the shortcut was recognised
+    // does not depend on it.
+    boolean copy() {
+        return view != null && view.copy();
+    }
+
+    boolean cut() {
+        return view != null && view.cut();
+    }
+
+    boolean paste() {
+        return view != null && view.paste();
+    }
+
     void dispose() {
         if (view != null) view.dispose();
     }

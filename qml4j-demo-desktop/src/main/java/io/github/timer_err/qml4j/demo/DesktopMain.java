@@ -1,5 +1,7 @@
 package io.github.timer_err.qml4j.demo;
 
+import io.github.timer_err.qml4j.demo.DesktopShortcut.DesktopAction;
+import io.github.timer_err.qml4j.demo.DesktopShortcut.ShortcutPlatform;
 import io.github.timer_err.qml4j.render.Clipboard;
 import io.github.timer_err.qml4j.render.QmlView;
 import io.github.timer_err.qml4j.runtime.color.StyleManager;
@@ -32,6 +34,7 @@ public final class DesktopMain {
     private boolean glfwInitialized;
     private GlfwSurfaceBackend backend;
     private DesktopHost host;
+    private ShortcutPlatform shortcutPlatform;
 
     // The one source of truth for the logical coordinate space, refreshed once per iteration
     // before the frame it will be drawn with. The metrics callbacks only raise the flag.
@@ -79,6 +82,9 @@ public final class DesktopMain {
         Throwable failure = null;
         try {
             createWindow();
+            // GLFW is the authority on the backend it selected; os.name cannot tell X11 from
+            // Wayland, and the editing shortcuts follow the windowing system's convention.
+            shortcutPlatform = DesktopShortcut.platformOf(GLFW.glfwGetPlatform());
 
             metrics = queryMetrics();
             warnOnceOnNonUniformScale(metrics);
@@ -258,7 +264,7 @@ public final class DesktopMain {
         });
         GLFW.glfwSetKeyCallback(window, new GLFWKeyCallback() {
             @Override public void invoke(long win, int key, int scancode, int action, int mods) {
-                dispatchKey(key, mods, action != GLFW.GLFW_RELEASE);
+                dispatchKey(key, mods, action);
             }
         });
         GLFW.glfwSetCharCallback(window, new GLFWCharCallback() {
@@ -274,11 +280,25 @@ public final class DesktopMain {
         });
     }
 
-    private void dispatchKey(int glfwKey, int mods, boolean down) {
+    // The raw GLFW action reaches here intact: the reserved editing shortcuts fire on PRESS
+    // alone, while every other control key keeps the repeat it has today.
+    private void dispatchKey(int glfwKey, int mods, int action) {
+        if (runShortcut(DesktopShortcut.classify(shortcutPlatform, glfwKey, action, mods))) return;
         int code = mapKey(glfwKey, mods);
         if (code == 0) return;
         boolean shift = (mods & GLFW.GLFW_MOD_SHIFT) != 0;
-        host.key(code, null, down, shift);
+        host.key(code, null, action != GLFW.GLFW_RELEASE, shift);
+    }
+
+    // A recognised shortcut is consumed whatever core reports: pressing the copy chord with
+    // nothing selected does nothing, and must still not reach the plain key path.
+    private boolean runShortcut(DesktopAction action) {
+        switch (action) {
+            case COPY: host.copy(); return true;
+            case CUT: host.cut(); return true;
+            case PASTE: host.paste(); return true;
+            default: return false;
+        }
     }
 
     // Printable characters arrive via the char callback; this maps only the control
