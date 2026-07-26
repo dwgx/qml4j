@@ -74,9 +74,14 @@ jobs:
           # JVM must match JAVA_HOME's arch (mismatched natives fail to load).
           set -eu
           dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
-          set -- "$dir"/qml4j-app-*.jar
-          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "expected exactly one qml4j-app jar next to this script" >&2; exit 1; }
-          exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" -XstartOnFirstThread -jar "$1"
+          jar=
+          for f in "$dir"/qml4j-app-*.jar; do
+            [ -f "$f" ] || continue
+            [ -z "$jar" ] || { echo "expected exactly one qml4j-app jar next to this script" >&2; exit 1; }
+            jar="$f"
+          done
+          [ -n "$jar" ] || { echo "no qml4j-app jar next to this script" >&2; exit 1; }
+          exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" -XstartOnFirstThread -jar "$jar" "$@"
           LAUNCHER
           chmod +x "$bundle/qml4j.command"
           tar czf "$bundle.tar.gz" "$bundle"
