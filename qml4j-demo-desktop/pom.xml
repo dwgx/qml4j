@@ -14,6 +14,10 @@
          Inherits the parent's release=8 (Skija supports Java 8). -->
     <properties>
         <maven.deploy.skip>true</maven.deploy.skip>
+        <!-- The upstream app clone the dist profiles bundle when it is on disk; -Dmcq.dir moves it. -->
+        <mcq.dir>${project.basedir}/../../mcq</mcq.dir>
+        <!-- Stamped into every dist jar's manifest; CI passes -Ddist.revision=<commit sha>. -->
+        <dist.revision>local</dist.revision>
     </properties>
 
     <dependencies>
@@ -92,6 +96,95 @@
                 <targetPath>fonts</targetPath>
             </resource>
         </resources>
+        <!-- Everything the dist profiles share. Managed only: a build that activates no dist
+             profile declares neither plugin, so neither runs. Each profile declares them bare
+             and adds just its own shade artifactSet. -->
+        <pluginManagement>
+            <plugins>
+                <!-- Bundle the upstream app source under /mcq/** and write the Controls
+                     index the bundled AppResourceLoader reads (a jar entry can't be listed
+                     like a directory at runtime). -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-antrun-plugin</artifactId>
+                    <version>3.1.0</version>
+                    <executions>
+                        <execution>
+                            <id>bundle-mcq</id>
+                            <phase>prepare-package</phase>
+                            <goals><goal>run</goal></goals>
+                            <configuration>
+                                <target xmlns:if="ant:if">
+                                    <!-- The clone lives outside this repo and is not ours to
+                                         redistribute, so a dist build without it must still
+                                         succeed and ship no /mcq/** at all. -->
+                                    <available property="mcq.present" file="${mcq.dir}/src/App" type="dir"/>
+                                    <sequential if:set="mcq.present">
+                                        <property name="out" value="${project.build.outputDirectory}/mcq"/>
+                                        <copy todir="${out}/App">
+                                            <fileset dir="${mcq.dir}/src/App"
+                                                     excludes="**/CMakeLists.txt,**/*.cpp,**/*.h,**/*.rc"/>
+                                        </copy>
+                                        <copy todir="${out}/Core/Controls">
+                                            <fileset dir="${mcq.dir}/src/Core/Controls" includes="**/*.qml"/>
+                                        </copy>
+                                        <copy todir="${out}/Core/Styles">
+                                            <fileset dir="${mcq.dir}/src/Core/Styles"/>
+                                        </copy>
+                                        <fileset id="ctrls" dir="${out}/Core/Controls" includes="*.qml"/>
+                                        <pathconvert property="ctrl.index" refid="ctrls" pathsep="&#10;">
+                                            <mapper type="flatten"/>
+                                        </pathconvert>
+                                        <echo file="${out}/Core/Controls.index" message="${ctrl.index}&#10;"/>
+                                    </sequential>
+                                </target>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-shade-plugin</artifactId>
+                    <version>3.5.3</version>
+                    <executions>
+                        <execution>
+                            <id>dist-shade</id>
+                            <phase>package</phase>
+                            <goals><goal>shade</goal></goals>
+                            <configuration>
+                                <createDependencyReducedPom>false</createDependencyReducedPom>
+                                <!-- Version and platform in the filename: a downloaded jar has to say
+                                     what it is. Each dist profile sets dist.platform. -->
+                                <finalName>qml4j-app-${project.version}-${dist.platform}</finalName>
+                                <filters>
+                                    <filter>
+                                        <artifact>*:*</artifact>
+                                        <excludes>
+                                            <exclude>META-INF/*.SF</exclude>
+                                            <exclude>META-INF/*.DSA</exclude>
+                                            <exclude>META-INF/*.RSA</exclude>
+                                            <exclude>module-info.class</exclude>
+                                            <exclude>META-INF/versions/*/module-info.class</exclude>
+                                        </excludes>
+                                    </filter>
+                                </filters>
+                                <transformers>
+                                    <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                        <mainClass>io.github.timer_err.qml4j.demo.DistMain</mainClass>
+                                        <manifestEntries>
+                                            <Multi-Release>true</Multi-Release>
+                                            <Implementation-Title>qml4j-app</Implementation-Title>
+                                            <Implementation-Version>${project.version}</Implementation-Version>
+                                            <Build-Revision>${dist.revision}</Build-Revision>
+                                        </manifestEntries>
+                                    </transformer>
+                                </transformers>
+                            </configuration>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
         <plugins>
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
@@ -113,11 +206,12 @@
         </plugins>
     </build>
 
-    <!-- `mvn -pl qml4j-demo-desktop -Pdist package` builds a self-contained, cross-platform
-         fat jar (target/qml4j-app.jar) that runs the bundled MD3 app. It carries both Linux
-         and Windows natives (Skija + LWJGL), bundles the upstream app source from ${mcq.dir}
-         under /mcq/**, and is a multi-release jar (Skija needs its JDK 9+ Cleanable). The app
-         source clone is not in this repo; point mcq.dir at it (default ../../mcq). -->
+    <!-- `mvn -pl qml4j-demo-desktop -am -P<dist profile> package` builds a self-contained fat jar
+         (target/qml4j-app-${project.version}-${dist.platform}.jar) that runs the bundled MD3 app:
+         `dist` carries the Linux and Windows natives in one jar, `dist-macos-arm64` / `dist-macos-x64`
+         one macOS arch each (the macOS JVM needs -XstartOnFirstThread, so those ship inside a tar.gz with a
+         qml4j.command launcher the dist workflow generates). All are multi-release jars (Skija needs its JDK 9+ Cleanable)
+         and bundle the upstream app source from ${mcq.dir} under /mcq/** when that clone is there. -->
     <profiles>
         <!-- On a non-Linux desktop, select the matching LWJGL and Skija native artifacts.
              Platform-specific launcher requirements are handled separately. -->
@@ -181,11 +275,18 @@
                 </dependency>
             </dependencies>
         </profile>
+
+        <!-- The dist profiles are never auto-activated and are declared after the dev ones, so
+             their lwjgl.natives wins over whatever the build host activated (last declaration of
+             an active profile wins). Each sets that property explicitly rather than inheriting it,
+             names the Skija native it wants, and shades out every Skija native it does not want,
+             including the unconditional skija-linux-x64 base dependency. The LWJGL natives need no
+             such exclude: they enter through the ${lwjgl.natives} classifier, so exactly one set
+             resolves per profile. Shade-only surgery; dev/exec resolution is untouched. -->
         <profile>
             <id>dist</id>
             <properties>
-                <mcq.dir>${project.basedir}/../../mcq</mcq.dir>
-                <!-- Keep the Linux+Windows bundle independent of host-activated dev profiles. -->
+                <dist.platform>linux-windows-x64</dist.platform>
                 <lwjgl.natives>natives-linux</lwjgl.natives>
             </properties>
             <dependencies>
@@ -218,85 +319,94 @@
             </dependencies>
             <build>
                 <plugins>
-                    <!-- Bundle the upstream app source under /mcq/** and write the Controls
-                         index the bundled AppResourceLoader reads (a jar entry can't be listed
-                         like a directory at runtime). -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-antrun-plugin</artifactId>
-                        <version>3.1.0</version>
-                        <executions>
-                            <execution>
-                                <id>bundle-mcq</id>
-                                <phase>prepare-package</phase>
-                                <goals><goal>run</goal></goals>
-                                <configuration>
-                                    <target>
-                                        <property name="out" value="${project.build.outputDirectory}/mcq"/>
-                                        <copy todir="${out}/App">
-                                            <fileset dir="${mcq.dir}/src/App"
-                                                     excludes="**/CMakeLists.txt,**/*.cpp,**/*.h,**/*.rc"/>
-                                        </copy>
-                                        <copy todir="${out}/Core/Controls">
-                                            <fileset dir="${mcq.dir}/src/Core/Controls" includes="**/*.qml"/>
-                                        </copy>
-                                        <copy todir="${out}/Core/Styles">
-                                            <fileset dir="${mcq.dir}/src/Core/Styles"/>
-                                        </copy>
-                                        <fileset id="ctrls" dir="${out}/Core/Controls" includes="*.qml"/>
-                                        <pathconvert property="ctrl.index" refid="ctrls" pathsep="&#10;">
-                                            <mapper type="flatten"/>
-                                        </pathconvert>
-                                        <echo file="${out}/Core/Controls.index" message="${ctrl.index}&#10;"/>
-                                    </target>
-                                </configuration>
-                            </execution>
-                        </executions>
                     </plugin>
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-shade-plugin</artifactId>
-                        <version>3.5.3</version>
-                        <executions>
-                            <execution>
-                                <phase>package</phase>
-                                <goals><goal>shade</goal></goals>
-                                <configuration>
-                                    <createDependencyReducedPom>false</createDependencyReducedPom>
-                                    <finalName>qml4j-app</finalName>
-                                    <!-- macos-*-dev auto-activates on a mac build host and adds its runtime
-                                         Skija native; exclude the macOS Skija artifacts (precise coords, not
-                                         a wildcard) so the shaded jar stays Linux+Windows regardless of build
-                                         host. Shade-only: normal dev/exec dependency resolution is unaffected. -->
-                                    <artifactSet>
-                                        <excludes>
-                                            <exclude>io.github.humbleui:skija-macos-x64</exclude>
-                                            <exclude>io.github.humbleui:skija-macos-arm64</exclude>
-                                        </excludes>
-                                    </artifactSet>
-                                    <filters>
-                                        <filter>
-                                            <artifact>*:*</artifact>
-                                            <excludes>
-                                                <exclude>META-INF/*.SF</exclude>
-                                                <exclude>META-INF/*.DSA</exclude>
-                                                <exclude>META-INF/*.RSA</exclude>
-                                                <exclude>module-info.class</exclude>
-                                                <exclude>META-INF/versions/*/module-info.class</exclude>
-                                            </excludes>
-                                        </filter>
-                                    </filters>
-                                    <transformers>
-                                        <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                            <mainClass>io.github.timer_err.qml4j.demo.DistMain</mainClass>
-                                            <manifestEntries>
-                                                <Multi-Release>true</Multi-Release>
-                                            </manifestEntries>
-                                        </transformer>
-                                    </transformers>
-                                </configuration>
-                            </execution>
-                        </executions>
+                        <configuration>
+                            <artifactSet>
+                                <excludes>
+                                    <exclude>io.github.humbleui:skija-macos-x64</exclude>
+                                    <exclude>io.github.humbleui:skija-macos-arm64</exclude>
+                                </excludes>
+                            </artifactSet>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>dist-macos-arm64</id>
+            <properties>
+                <dist.platform>macos-arm64</dist.platform>
+                <lwjgl.natives>natives-macos-arm64</lwjgl.natives>
+            </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>io.github.humbleui</groupId>
+                    <artifactId>skija-macos-arm64</artifactId>
+                    <version>${skija.version}</version>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-shade-plugin</artifactId>
+                        <configuration>
+                            <artifactSet>
+                                <excludes>
+                                    <exclude>io.github.humbleui:skija-linux-x64</exclude>
+                                    <exclude>io.github.humbleui:skija-windows-x64</exclude>
+                                    <exclude>io.github.humbleui:skija-macos-x64</exclude>
+                                </excludes>
+                            </artifactSet>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>dist-macos-x64</id>
+            <properties>
+                <dist.platform>macos-x64</dist.platform>
+                <!-- LWJGL's x64 macOS classifier has no arch suffix. -->
+                <lwjgl.natives>natives-macos</lwjgl.natives>
+            </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>io.github.humbleui</groupId>
+                    <artifactId>skija-macos-x64</artifactId>
+                    <version>${skija.version}</version>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-shade-plugin</artifactId>
+                        <configuration>
+                            <artifactSet>
+                                <excludes>
+                                    <exclude>io.github.humbleui:skija-linux-x64</exclude>
+                                    <exclude>io.github.humbleui:skija-windows-x64</exclude>
+                                    <exclude>io.github.humbleui:skija-macos-arm64</exclude>
+                                </excludes>
+                            </artifactSet>
+                        </configuration>
                     </plugin>
                 </plugins>
             </build>
