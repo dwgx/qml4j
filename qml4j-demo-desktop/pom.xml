@@ -115,6 +115,27 @@
                             <goals><goal>run</goal></goals>
                             <configuration>
                                 <target xmlns:if="ant:if">
+                                    <!-- Every dist profile drives the same shade execution, so two of
+                                         them at once would silently emit one jar named after whichever
+                                         profile Maven merged last, carrying the wrong natives. Fail
+                                         instead: each dist.platform.<id> is set by exactly one profile. -->
+                                    <fail message="activate exactly one dist profile: -Pdist, -Pdist-macos-arm64 or -Pdist-macos-x64">
+                                        <condition>
+                                            <or>
+                                                <and>
+                                                    <isset property="dist.platform.linux-windows-x64"/>
+                                                    <or>
+                                                        <isset property="dist.platform.macos-arm64"/>
+                                                        <isset property="dist.platform.macos-x64"/>
+                                                    </or>
+                                                </and>
+                                                <and>
+                                                    <isset property="dist.platform.macos-arm64"/>
+                                                    <isset property="dist.platform.macos-x64"/>
+                                                </and>
+                                            </or>
+                                        </condition>
+                                    </fail>
                                     <!-- The clone lives outside this repo and is not ours to
                                          redistribute, so a dist build without it must still
                                          succeed and ship no /mcq/** at all. -->
@@ -287,6 +308,7 @@
             <id>dist</id>
             <properties>
                 <dist.platform>linux-windows-x64</dist.platform>
+                <dist.platform.linux-windows-x64>true</dist.platform.linux-windows-x64>
                 <lwjgl.natives>natives-linux</lwjgl.natives>
             </properties>
             <dependencies>
@@ -342,6 +364,7 @@
             <id>dist-macos-arm64</id>
             <properties>
                 <dist.platform>macos-arm64</dist.platform>
+                <dist.platform.macos-arm64>true</dist.platform.macos-arm64>
                 <lwjgl.natives>natives-macos-arm64</lwjgl.natives>
             </properties>
             <dependencies>
@@ -378,6 +401,7 @@
             <id>dist-macos-x64</id>
             <properties>
                 <dist.platform>macos-x64</dist.platform>
+                <dist.platform.macos-x64>true</dist.platform.macos-x64>
                 <!-- LWJGL's x64 macOS classifier has no arch suffix. -->
                 <lwjgl.natives>natives-macos</lwjgl.natives>
             </properties>
