@@ -23,3 +23,10 @@ licensed under the Apache License 2.0, Copyright Google LLC.
 
 Bundled fonts under shared-qml/fonts (Material Symbols Outlined, Roboto)
 are Copyright Google and licensed under the Apache License, Version 2.0.
+
+The demo's showcase application source is material-components-qml
+(https://github.com/sudoevolve/material-components-qml), Copyright its
+authors. It states no licence, so it is neither part of this repository
+nor redistributed with any build produced here. A local build bundles it
+under /mcq/** only when the developer has cloned it themselves; the jars
+published by this project's CI contain no part of it.

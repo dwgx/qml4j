@@ -16,9 +16,9 @@
 
 ---
 
-`.qml` source → JIT-compiled object tree (ASM bytecode) → bindings/expressions on embedded Rhino → pixels via Skija. No Qt, no C++, no codegen step — a `.qml` file becomes live JVM classes in-process. Runs on x86-64 desktop today; Android (D8 → DEX → `InMemoryDexClassLoader`) is a milestone.
+`.qml` source → JIT-compiled object tree (ASM bytecode) → bindings/expressions on embedded Rhino → pixels via Skija. No Qt, no C++, no codegen step — a `.qml` file becomes live JVM classes in-process. Runs on desktop Linux, Windows and macOS (Apple silicon and Intel); Android (D8 → DEX → `InMemoryDexClassLoader`) is a milestone.
 
-**Status — pre-alpha, but capable.** All 10 pages of the *unmodified* upstream MD3 (Material Design 3) showcase app render — Home, Color, Navigation, Settings, Typography, Icon, Pro, Components, Widgets, About — dozens of components, carousels, animated canvas widgets, charts. **585 tests green**, checkstyle CI guard. The engine was refactored to polymorphic dispatch + single-responsibility modules (conventions in `CLAUDE.md` § *Dispatch & polymorphism*).
+**Status — pre-alpha, but capable.** All 10 pages of the *unmodified* upstream MD3 (Material Design 3) showcase app render — Home, Color, Navigation, Settings, Typography, Icon, Pro, Components, Widgets, About — dozens of components, carousels, animated canvas widgets, charts. **649 tests green** on Linux, Windows and macOS (both architectures) in CI. The engine was refactored to polymorphic dispatch + single-responsibility modules (conventions in `CLAUDE.md` § *Dispatch & polymorphism*).
 
 ## Quick start
 
@@ -52,7 +52,7 @@ Maven:
 <dependency>
     <groupId>io.github.timer-err</groupId>
     <artifactId>qml4j-core</artifactId>
-    <version>0.1.1</version>
+    <version>0.2.24</version>
 </dependency>
 <!-- Skija is a `provided` dependency of the engine; add the native bundle for your platform. -->
 <dependency>
@@ -65,7 +65,7 @@ Maven:
 Gradle:
 
 ```kotlin
-implementation("io.github.timer-err:qml4j-core:0.1.1")
+implementation("io.github.timer-err:qml4j-core:0.2.24")
 // pick your platform: skija-linux-x64 / skija-windows-x64 / skija-macos-x64 / skija-macos-arm64
 runtimeOnly("io.github.humbleui:skija-linux-x64:0.143.16")
 ```
@@ -90,7 +90,7 @@ qml4j aims to be a fully native-Java path from QML source to pixels — a drop-i
 
 <p align="center">
   <a href="https://central.sonatype.com/artifact/io.github.timer-err/qml4j-core"><img src="https://img.shields.io/maven-central/v/io.github.timer-err/qml4j-core?label=Maven%20Central&color=7C6CF0" alt="Maven Central"></a>
-  <img src="https://img.shields.io/badge/desktop-Linux%20%E2%80%A2%20Windows-2BD46E" alt="Desktop">
+  <img src="https://img.shields.io/badge/desktop-Linux%20%E2%80%A2%20Windows%20%E2%80%A2%20macOS-2BD46E" alt="Desktop">
   <img src="https://img.shields.io/badge/Android-D8%20%E2%86%92%20DEX-A4C639" alt="Android">
 </p>
 
@@ -134,24 +134,35 @@ The four original `qml4j-{parser,engine,compiler,render}` modules were merged in
 
 ## Build
 
-Requires JDK 8+ (built with a JDK 21 toolchain), Maven 3.9+.
+The published bytecode targets Java 8, so **consumers need only a JDK 8 runtime**. Building
+the project needs **JDK 11 or newer** (the tests compile at release 11) and Maven 3.9+; CI
+builds on JDK 17.
 
 ```sh
-mvn verify      # compile + 585 tests + checkstyle guard, all modules
+mvn verify      # compile + 649 tests + checkstyle/PMD guards, all modules
 ```
+
+Run it from the repository root: the Checkstyle and PMD configurations resolve relative to
+the directory Maven was started in, so `cd qml4j-core && mvn verify` cannot find them. Use
+`-pl` instead.
 
 ```sh
 mvn -pl qml4j-core test                          # engine tests only
 mvn -pl qml4j-core test -Dtest=DialogLoadTest    # one test
 ```
 
-The build runs offline-friendly; iteration commonly uses `mvn -o install -DskipTests` then `mvn -o -pl qml4j-core test`. A checkstyle guard (`config/checkstyle/checkstyle.xml`) is bound to `verify` and fails on unused/redundant imports and unused locals.
+The build runs offline-friendly; iteration commonly uses `mvn -o install -DskipTests` then `mvn -o -pl qml4j-core test`. A checkstyle guard (`config/checkstyle/checkstyle.xml`) is bound to `verify` and fails on unused/redundant imports and unused locals; a PMD guard (`config/pmd/ruleset.xml`) fails on unused private fields, methods and assignments.
+
+Every push runs the same `mvn verify` on Linux (JDK 17 and 21), Windows, macOS on Apple
+silicon and macOS on Intel — five jobs, all running the full test suite and both guards.
 
 ### Run a QML project (desktop)
 
 The desktop module is a generic QML runner, quickshell-style: point it at a project
 directory and an entry `.qml`, and it loads everything — the entry, its `import md3.Core`,
-icon fonts — from that directory on disk. Nothing is bundled into the jar.
+icon fonts — from that directory on disk. In this mode nothing is read from the jar; the
+fonts and `md3/Core/Theme.qml` that *are* on the classpath exist for `app` mode, which has
+no project directory to read them from.
 
 ```sh
 ./run.sh <projectDir> <entry.qml>
@@ -194,25 +205,63 @@ On macOS the desktop host must additionally be launched with `-XstartOnFirstThre
 can run on the process's first thread; `run.sh` adds it automatically when it detects macOS.
 Use `run.sh` (or an equivalent direct `java -XstartOnFirstThread … DesktopMain` launch) there.
 `mvn exec:java` cannot enable it: the flag only takes effect at JVM start-up, and Maven's JVM
-has already started off the first thread, so it can't be applied afterward. (macOS desktop
-support is still in progress — this covers only the first-thread launch.)
+has already started off the first thread, so it can't be applied afterward.
+
+`run.sh` also launches the JDK that `JAVA_HOME` points at rather than whichever `java` is
+first on `PATH`, because Maven resolved the natives for *that* JDK's architecture — an
+Apple-silicon `java` handed x64 natives dies in `UnsatisfiedLinkError`. Set `JAVA_HOME` to
+pick an architecture; leave it unset and the launcher behaves exactly as before.
 
 On Linux, closing the window exits with code 137: the host SIGKILLs itself to dodge an NVIDIA libEGL teardown SIGSEGV. macOS and Windows release resources and exit 0 normally.
 
 ### Package a distributable jar
 
+One profile per target, because a JVM can only load the natives matching its own
+architecture. Activate exactly one — the build stops if you pick two.
+
 ```sh
-mvn -pl qml4j-demo-desktop -am -Pdist package
-java -jar qml4j-demo-desktop/target/qml4j-app.jar                        # bundled MD3 app
-java -jar qml4j-demo-desktop/target/qml4j-app.jar <projectDir> <entry.qml>  # run any project
+mvn -pl qml4j-demo-desktop -am -Pdist package              # Linux + Windows, x64
+mvn -pl qml4j-demo-desktop -am -Pdist-macos-arm64 package  # macOS, Apple silicon
+mvn -pl qml4j-demo-desktop -am -Pdist-macos-x64 package    # macOS, Intel
 ```
 
-`-Pdist` shades a self-contained, cross-platform fat jar (`qml4j-app.jar`): it carries both
-Linux and Windows Skija/LWJGL natives (each loader picks its platform at runtime), is a
-multi-release jar, and bundles the upstream MD3 app source under `/mcq/**`. With no args it
-runs that bundled app; pass `<projectDir> <entry.qml>` and it's the same on-disk runner as
-`run.sh` (those paths are resolved relative to your current directory). The bundled app source
-is read from `${mcq.dir}` at build time (default `../mcq`); override with `-Dmcq.dir=/path/to/mcq`.
+Each produces `target/qml4j-app-<version>-<platform>.jar`, a multi-release fat jar whose
+manifest carries `Implementation-Version` and a `Build-Revision` (pass
+`-Ddist.revision=<sha>`; CI passes the commit). The `dist` jar carries both Linux and
+Windows Skija/LWJGL natives in one file, so one download serves both; the macOS jars carry
+one architecture each.
+
+```sh
+java -jar target/qml4j-app-0.2.24-linux-windows-x64.jar                       # bundled app
+java -jar target/qml4j-app-0.2.24-linux-windows-x64.jar <projectDir> <entry.qml>
+```
+
+On macOS a bare `java -jar` cannot work: Cocoa requires `-XstartOnFirstThread`, and that is
+a JVM start-up flag. Launch it directly, or use the `qml4j.command` wrapper the dist
+workflow ships alongside the jar:
+
+```sh
+java -XstartOnFirstThread -jar target/qml4j-app-0.2.24-macos-arm64.jar
+```
+
+**The showcase app is not in the jar.** It comes from a separate checkout of
+[material-components-qml](https://github.com/sudoevolve/material-components-qml), which
+publishes no licence, so we do not redistribute it. Clone it and the build bundles it under
+`/mcq/**`; build without it and you get a working jar that has no bundled app:
+
+```sh
+git clone https://github.com/sudoevolve/material-components-qml ../mcq
+mvn -pl qml4j-demo-desktop -am -Pdist package        # picks ../mcq up automatically
+```
+
+Point elsewhere with `-Dmcq.dir=/path/to/mcq` at build time. To run an unbundled jar against
+a clone, pass the path as a JVM property — note it must reach the JVM, not the app, so it
+goes before `-jar` or through `JDK_JAVA_OPTIONS`:
+
+```sh
+java -Dqml4j.mcq=/path/to/mcq -jar target/qml4j-app-0.2.24-linux-windows-x64.jar app
+JDK_JAVA_OPTIONS=-Dqml4j.mcq=/path/to/mcq ./qml4j.command app     # macOS wrapper
+```
 
 ## Performance
 
