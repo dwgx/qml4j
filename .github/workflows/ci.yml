@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']   # every branch; a branch filter also keeps tag pushes out
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # head_ref || ref_name keys push and pull_request runs of the same branch to one
+  # group; github.ref alone would give them separate groups and double the matrix.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # Sized for the slowest leg (macos-latest arm64: 3 CPU / 7 GB, cold ~/.m2);
+    # a hang guard against the 6-hour default, which would otherwise sit on one
+    # of the 5 concurrent macOS slots for the rest of the day.
+    timeout-minutes: 45
+
+    strategy:
+      # Each leg is independent evidence (per-OS, per-arch, per-JDK); cancelling
+      # the survivors on the first red would throw that away.
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64-jdk17
+            os: ubuntu-latest
+            java: '17'
+          - name: linux-x64-jdk21
+            os: ubuntu-latest
+            java: '21'
+          - name: windows-x64-jdk17
+            os: windows-latest
+            java: '17'
+          # macos-latest is Apple silicon (arm64) since the July 2026 migration.
+          - name: macos-arm64-jdk17
+            os: macos-latest
+            java: '17'
+          # Only remaining free Intel image. Published x86_64 runner horizon is
+          # Aug/Fall 2027 -- this leg has to be retired or re-labelled by then.
+          - name: macos-x64-jdk17
+            os: macos-26-intel
+            java: '17'
+
+    steps:
+      # The repo has no .gitattributes and is LF throughout; Windows' default
+      # autocrlf would rewrite line endings at checkout. Must precede checkout.
+      - name: Disable autocrlf
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # libskija.so links libEGL/libGL/libGLES at load time, and the text tests
+      # need a font via fontconfig. Measuring text opens no GL context, so the
+      # libraries alone are enough -- no xvfb, no DISPLAY. (Same set as release.yml.)
+      - name: Install headless GL/font libs for Skija
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libglvnd0 libgl1 libglx-mesa0 libegl1 libgles2 libfontconfig1 fonts-dejavu-core
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      # Names the OS/arch-activated skija native profile in the log, which is the
+      # only per-arch signal the build otherwise leaves behind.
+      # Plugin version pinned: an unpinned help-plugin resolves latest from Central
+      # on every run and could redden all legs before the gate even starts.
+      - name: Report active profiles
+        run: mvn -B --no-transfer-progress org.apache.maven.plugins:maven-help-plugin:3.5.2:active-profiles -pl qml4j-core
+
+      # Root invocation is mandatory: the Checkstyle and PMD configLocation values
+      # resolve ${maven.multiModuleProjectDirectory} from the invocation directory,
+      # and there is no .mvn marker, so `cd <module> && mvn` breaks the gate.
+      - name: Build and verify
+        run: mvn -B --no-transfer-progress verify
+
+      # A remote leg's failed-test detail is otherwise unreachable.
+      - name: Upload surefire reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-${{ matrix.name }}
+          path: '**/target/surefire-reports'
