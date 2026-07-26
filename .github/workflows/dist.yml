@@ -1,0 +1,100 @@
+name: Dist
+
+on:
+  push:
+    branches: ['feat/per-arch-dist']   # iteration evidence while the batch is open
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # Sized for the slowest leg (macOS arm64: 3 CPU / 7 GB, cold ~/.m2).
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: dist-linux-windows-x64
+            os: ubuntu-latest
+            profile: dist
+            platform: linux-windows-x64
+          - name: dist-macos-arm64
+            os: macos-latest
+            profile: dist-macos-arm64
+            platform: macos-arm64
+          # Only remaining free Intel image; published x86_64 runner horizon is
+          # Aug/Fall 2027 -- this leg has to be retired or re-labelled by then.
+          - name: dist-macos-x64
+            os: macos-26-intel
+            profile: dist-macos-x64
+            platform: macos-x64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # Tests already gate every push via ci.yml; dist builds artifacts, so the
+      # test phase is skipped to keep this single-purpose. Root invocation is
+      # mandatory (checkstyle/pmd config resolves from the invocation directory).
+      - name: Build dist jar
+        run: mvn -B --no-transfer-progress -P${{ matrix.profile }} -pl qml4j-demo-desktop -am package -DskipTests -Ddist.revision=${{ github.sha }}
+
+      # -XstartOnFirstThread is a JVM launch flag, so a bare `java -jar` cannot
+      # work on macOS; the jar ships in a tar (exec bit survives tar, not the
+      # artifact zip) together with a launcher that supplies the flag and honors
+      # JAVA_HOME the same way run.sh does.
+      - name: Bundle macOS tar with launcher
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          jar="$(ls qml4j-demo-desktop/target/qml4j-app-*-${{ matrix.platform }}.jar)"
+          bundle="$(basename "${jar%.jar}")"
+          mkdir "$bundle"
+          cp "$jar" "$bundle/"
+          cat > "$bundle/qml4j.command" <<'LAUNCHER'
+          #!/bin/sh
+          # macOS/Cocoa needs the JVM started with -XstartOnFirstThread, and the
+          # JVM must match JAVA_HOME's arch (mismatched natives fail to load).
+          set -eu
+          dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+          set -- "$dir"/qml4j-app-*.jar
+          [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "expected exactly one qml4j-app jar next to this script" >&2; exit 1; }
+          exec "${JAVA_HOME:+$JAVA_HOME/bin/}java" -XstartOnFirstThread -jar "$1"
+          LAUNCHER
+          chmod +x "$bundle/qml4j.command"
+          tar czf "$bundle.tar.gz" "$bundle"
+
+      - name: Upload macOS bundle
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qml4j-app-${{ matrix.platform }}
+          path: qml4j-app-*-${{ matrix.platform }}.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload jar
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qml4j-app-${{ matrix.platform }}
+          path: qml4j-demo-desktop/target/qml4j-app-*-${{ matrix.platform }}.jar
+          retention-days: 90
+          if-no-files-found: error
